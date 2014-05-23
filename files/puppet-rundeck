@@ -1,0 +1,86 @@
+#!/opt/puppet/bin/ruby
+# 2013-03-12 - Will Sterling
+# This is a glue script to connect Rundeck to PuppetDB it was heavily inspired by 
+# https://github.com/martin2110/puppetdb-rundeck.  It should be run every few
+# minutes to keep RunDeck up to date.  The script connects to PuppetDB, gathers a list
+# of nodes their modules and facts. Nodes are pinged with a 1 second timeout.  If they
+# are not alive they are removed from the list.
+
+
+require 'rubygems'
+require 'net/http'
+require 'uri'
+require 'json'
+require 'yaml'
+# set your puppetdb info
+puppetdb_host = 'localhost'
+puppetdb_port = '8080'
+puppetdb_query = {'query'=>'["=", "type", "Class"],]'}
+
+uri = URI.parse( "http://#{puppetdb_host}:#{puppetdb_port}/resources" )
+http = Net::HTTP.new(uri.host, uri.port) 
+request = Net::HTTP::Get.new(uri.path) 
+request.set_form_data( puppetdb_query )
+request = Net::HTTP::Get.new( uri.path+ '?' + request.body ) 
+request.add_field("Accept", "application/json")
+response = http.request(request)
+puppetdb_data = JSON.parse(response.body)
+
+rundeck_data = Hash.new
+puppetdb_data.each{|d|
+  host = d['certname']
+  if d['certname'].split('.').length > 1
+    host = host.split('.')[0]
+  end
+
+  title    = d['title']
+  rundeck_data[host] = Hash.new if not rundeck_data.key?(host)
+  rundeck_data[host]['tags'] = Array.new if not rundeck_data[host].key?('tags')
+  rundeck_data[host]['tags'] << title
+  rundeck_data[host]['certname'] = d['certname']
+
+}
+
+rundeck_data.keys.sort.each {|k|
+  rundeck_data[k]['tags'].uniq!
+  rundeck_data[k]['tags'] =  rundeck_data[k]['tags'].join(",")
+}
+
+rundeck_data.keys.each {|k|
+
+  if not %x{/bin/ping -c 1 #{k}}
+    rundeck_data.delete(k)
+    next
+  end 
+  
+  uri = URI.parse( "http://#{puppetdb_host}:#{puppetdb_port}/facts/#{rundeck_data[k]['certname']}" )
+  http = Net::HTTP.new(uri.host, uri.port)
+  request = Net::HTTP::Get.new(uri.path)
+  request.set_form_data( puppetdb_query )
+  request = Net::HTTP::Get.new( uri.path+ '?' + request.body )
+  request.add_field("Accept", "application/json")
+  response = http.request(request)
+  puppetdb_fact_data = JSON.parse(response.body)
+
+  #Started out grabbing all facts but that seemed to make RunDeck unhappy.
+  #puppetdb_fact_data['facts'].each_pair{|f,v|
+  #  if (f =~ /^ssh/)
+  #    next
+  #  end
+  #  rundeck_data[k][f] = v
+  #}
+
+  #Put the facts we care about into the response hash.
+  rundeck_data[k]['nodename'] = puppetdb_fact_data['facts']['hostname']
+  rundeck_data[k]['hostname'] = puppetdb_fact_data['facts']['fqdn']
+  rundeck_data[k]['hostname'] ||= puppetdb_fact_data['facts']['hostname']
+  rundeck_data[k]['username'] = 'rundeck'
+  rundeck_data[k]['osArch'] = puppetdb_fact_data['facts']['architecture']
+  rundeck_data[k]['osArch'] = puppetdb_fact_data['facts']['architecture']
+  rundeck_data[k]['osFamily'] = puppetdb_fact_data['facts']['osfamily']
+  rundeck_data[k]['osName'] = puppetdb_fact_data['facts']['operatingsystem']
+  rundeck_data[k]['osVersion'] = puppetdb_fact_data['facts']['operatingsystemrelease']
+  
+}
+
+puts rundeck_data.to_yaml
