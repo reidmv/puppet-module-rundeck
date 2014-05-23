@@ -1,5 +1,5 @@
 class rundeck::demo {
-  include rundeck
+  require rundeck
 
   $parent_dirs = [
     '/var/rundeck/projects',
@@ -21,6 +21,5 @@ class rundeck::demo {
     group   => 'rundeck',
     mode    => '0660',
     source  => 'puppet:///modules/rundeck/global.project.properties',
-    require => Class['rundeck'],
   }
 }
